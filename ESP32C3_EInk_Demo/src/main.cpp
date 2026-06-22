@@ -28,9 +28,6 @@ char batLevel[6] = "100%";
 float sp500Change = 0.0;
 float nasdaqChange = 0.0;
 
-// API Endpoint Setup
-const char* apiEndpoint = "https://api.coingecko.com/api/v3/simple/price?ids=sp500-tracked-fund,nasdaq-tracked-fund&vs_currencies=usd&include_24hr_change=true";
-
 // Time Server Configuration (Set to your local UTC offset, e.g., 3600 for GMT+1)
 const char* ntpServer  = "pool.ntp.org";
 const long  gmtOffset_sec = 3600; 
@@ -70,34 +67,65 @@ void connectAndSync() {
     }
 }
 
+// Update your endpoint string at the top of the file to use these verified asset IDs:
+const char* apiEndpoint = "https://api.coingecko.com/api/v3/simple/price?ids=spdr-s-p-500-etf-trust,invesco-qqq-trust&vs_currencies=usd&include_24hr_change=true";
+
 void fetchFinancialData() {
-    if (WiFi.status() != WL_CONNECTED) return;
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("❌ Cannot fetch data: Wi-Fi is disconnected!");
+        return;
+    }
+
+    Serial.println("\n-----------------------------------------");
+    Serial.println("        API HTTP REQUEST DEBUG           ");
+    Serial.println("-----------------------------------------");
+    Serial.printf("Pinging URL: %s\n", apiEndpoint);
 
     WiFiClientSecure client;
-    client.setInsecure(); // Skip intensive SSL certificate bundle verification processing
+    client.setInsecure(); // Skip certificate tracking to save RAM
 
     HTTPClient http;
     if (http.begin(client, apiEndpoint)) {
         int httpCode = http.GET();
+        Serial.printf("HTTP Response Code from Server: %d\n", httpCode);
+
         if (httpCode == HTTP_CODE_OK) {
             String payload = http.getString();
+            
+            // CRITICAL DEBUG: Print the raw server payload directly to console
+            Serial.println("--- RAW JSON PAYLOAD RECEIVED ---");
+            Serial.println(payload); 
+            Serial.println("---------------------------------");
+
             JsonDocument doc;
             DeserializationError error = deserializeJson(doc, payload);
             
             if (!error) {
-                sp500Change  = doc["sp500-tracked-fund"]["usd_24h_change"] | 0.0; 
-                nasdaqChange = doc["nasdaq-tracked-fund"]["usd_24h_change"] | 0.0;
-                Serial.println("Financial markets updated via API.");
+                // Extract using the updated valid tracking keys
+                sp500Change  = doc["spdr-s-p-500-etf-trust"]["usd_24h_change"] | 0.0; 
+                nasdaqChange = doc["invesco-qqq-trust"]["usd_24h_change"] | 0.0;
+                
+                Serial.println("Parsed values successfully:");
+                Serial.printf(" -> S&P 500 (SPY Proxy): %.2f%%\n", sp500Change);
+                Serial.printf(" -> Nasdaq (QQQ Proxy): %.2f%%\n", nasdaqChange);
+            } else {
+                Serial.print("❌ JSON Deserialization Failed: ");
+                Serial.println(error.c_str());
             }
+        } else {
+            Serial.printf("❌ HTTP GET Request Failed. Error string: %s\n", http.errorToString(httpCode).c_str());
         }
         http.end();
+    } else {
+        Serial.println("❌ Unable to connect to the API server host.");
     }
     
-    // Update the clock string right before drawing
+    // Refresh local time tracking
     struct tm timeinfo;
     if(getLocalTime(&timeinfo)){
         strftime(sysTime, sizeof(sysTime), "%H:%M", &timeinfo);
     }
+    Serial.println("=========================================\n");
 }
 
 void drawStockRow(const char* name, float value, int16_t yPos) {
