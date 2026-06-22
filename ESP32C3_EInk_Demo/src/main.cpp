@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <GxEPD2_BW.h>
 #include <Fonts/FreeSans9pt7b.h>
+#include <Fonts/FreeSansBold12pt7b.h> // Bold font for financial indices
 
 #define EPD_CS    10
 #define EPD_DC    2
@@ -11,48 +12,68 @@
 
 GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT> display(GxEPD2_154_D67(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
 
-// Bounding box variables for our dynamic text area
-int16_t  startX = 20;  // X coordinate where the name starts drawing
-int16_t  startY = 110; // Y coordinate (baseline of the font)
-uint16_t boxW   = 160; // Width of the partial refresh box
-uint16_t boxH   = 30;  // Height of the partial refresh box
+uint8_t screenRotation = 1; // 90-degree landscape mode
 
-void helloWorld() {
-    display.setRotation(1);
-    display.setFont(&FreeSans9pt7b);
+// Mock variables that your future data fetching routines will update
+const char* sysTime = "12:45";
+const char* batLevel = "84%";
+float sp500Change = 2.54;
+float nasdaqChange = -0.45;
+
+void drawStockRow(const char* name, float value, int16_t yPos) {
+    display.setFont(&FreeSansBold12pt7b);
     display.setTextColor(GxEPD_BLACK);
+    
+    // Draw the index name (e.g., "SP500:")
+    display.setCursor(10, yPos);
+    display.print(name);
+    display.print(": ");
 
-    display.setFullWindow();
-    display.firstPage();
-    do {
-        display.fillScreen(GxEPD_WHITE);
-        display.setCursor(20, 60);
-        display.print("Hello");
+    // Format the percentage text
+    char buffer[10];
+    snprintf(buffer, sizeof(buffer), "%s%.2f%%", (value >= 0) ? "+" : "", value);
+
+    // Dynamic Styling: Highlight negative drops with a black background badge
+    if (value < 0) {
+        int16_t tbx, tby; uint16_t tbw, tbh;
+        display.getTextBounds(buffer, display.getCursorX(), yPos, &tbx, &tby, &tbw, &tbh);
         
-        display.setCursor(startX, startY);
-        display.print("World!");
-    } while (display.nextPage());
+        // Draw a solid background block with padding for the negative drop
+        display.fillRect(tbx - 2, tby - 2, tbw + 4, tbh + 4, GxEPD_BLACK);
+        display.setTextColor(GxEPD_WHITE); // Invert text to white
+    } else {
+        display.setTextColor(GxEPD_BLACK);
+    }
+    
+    display.print(buffer);
 }
 
-void updateName(const char* newName) {
-    display.setRotation(1);
+void drawDashboard() {
+    display.setRotation(screenRotation);
+    display.fillScreen(GxEPD_WHITE);
+
+    // ----------------------------------------------------
+    // 1. TOP STATUS BAR
+    // ----------------------------------------------------
     display.setFont(&FreeSans9pt7b);
     display.setTextColor(GxEPD_BLACK);
-
-    // 1. Define the tiny box on the screen we want to alter
-    // setPartialWindow(x, y, width, height)
-    display.setPartialWindow(startX, startY - 20, boxW, boxH); 
     
-    // 2. Execute the partial refresh loop
-    display.firstPage();
-    do {
-        // Clear ONLY our partial window box with white
-        display.fillRect(startX, startY - 20, boxW, boxH, GxEPD_WHITE);
-        
-        // Write the new text into the box
-        display.setCursor(startX, startY);
-        display.print(newName);
-    } while (display.nextPage());
+    // Time (Left Corner)
+    display.setCursor(5, 20);
+    display.print(sysTime);
+    
+    // Battery (Right Corner - shifting left slightly based on length)
+    display.setCursor(150, 20);
+    display.print(batLevel);
+    
+    // Horizontal Separator Line
+    display.drawFastHLine(0, 30, 200, GxEPD_BLACK);
+
+    // ----------------------------------------------------
+    // 2. FINANCIAL DATA ROWS
+    // ----------------------------------------------------
+    drawStockRow("SP500", sp500Change, 90);
+    drawStockRow("NASDQ", nasdaqChange, 150);
 }
 
 void setup() {
@@ -60,19 +81,17 @@ void setup() {
     SPI.begin(EPD_SCL, -1, EPD_SDA, EPD_CS); 
     display.init(115200, true, 2, false);
     
-    Serial.println("Drawing baseline Hello World...");
-    helloWorld();
-    
-    delay(3000); // Wait 3 seconds so you can see the original text
-    
-    Serial.println("Performing partial refresh to 'Mathias!'...");
-    updateName("Mathias!");
-    
-    // Keep power on if you plan to do more quick updates, 
-    // but we power down here for best practice.
-    display.powerOff(); 
+    Serial.println("Updating dashboard view...");
+    display.setFullWindow();
+    display.firstPage();
+    do {
+        drawDashboard();
+    } while (display.nextPage());
+
+    // Put display panels to sleep to preserve hardware lifespan
+    display.powerOff();
 }
 
 void loop() {
-    // Empty
+    // Left empty for now
 }
