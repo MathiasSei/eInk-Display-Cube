@@ -3,11 +3,12 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+#include <time.h>
 #include <GxEPD2_BW.h>
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSansBold12pt7b.h>
 
-// Screen Pins
+// Screen Pins Configuration
 #define EPD_CS    10
 #define EPD_DC    2
 #define EPD_RST   3
@@ -17,135 +18,91 @@
 
 GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT> display(GxEPD2_154_D67(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
 
-// Wi-Fi Credentials
+// Environment Secret Declarations
 const char* ssid     = SECRET_SSID;
 const char* password = SECRET_PASS;
 
-// Global variables for live metrics
+// Global application variables
 char sysTime[6] = "--:--";
-char batLevel[6] = "100%"; // Placeholder for hardware voltage later
+char batLevel[6] = "100%"; 
 float sp500Change = 0.0;
 float nasdaqChange = 0.0;
 
-// API Endpoint (Using a public lightweight crypto/stock API example)
-// For this demo, we'll fetch stock change trends from an open API
+// API Endpoint Setup
 const char* apiEndpoint = "https://api.coingecko.com/api/v3/simple/price?ids=sp500-tracked-fund,nasdaq-tracked-fund&vs_currencies=usd&include_24hr_change=true";
 
-void connectToWiFi() {
-    Serial.println("\n=========================================");
-    Serial.println("       WI-FI DIAGNOSTIC SYSTEM           ");
-    Serial.println("=========================================");
+// Time Server Configuration (Set to your local UTC offset, e.g., 3600 for GMT+1)
+const char* ntpServer  = "pool.ntp.org";
+const long  gmtOffset_sec = 3600; 
+const int   daylightOffset_sec = 3600;
+
+void connectAndSync() {
+    Serial.println("\n--- Initiating Wi-Fi Secure Connection ---");
     
-    // 1. Verify what credentials the compiler actually injected
-    Serial.print("Target SSID: "); 
-    Serial.println(ssid);
-    Serial.print("Password Length: "); 
-    Serial.print(strlen(password)); 
-    Serial.println(" characters");
-
-    // 2. Clear old configurations and set mode
-    WiFi.disconnect(true); // Wipe any old glitched connections
-    delay(1000);
-    WiFi.mode(WIFI_STA);   // Explicitly set to Station mode
-
-    Serial.println("\nInitiating connection request...");
+    WiFi.disconnect(true);
+    delay(500);
+    WiFi.mode(WIFI_STA);
+    WiFi.setMinSecurity(WIFI_AUTH_WPA2_PSK);
+    
+    // PERMANENT ANTENNA FIX: Drop transmission power to mitigate RF reflection crash
+    WiFi.setTxPower(WIFI_POWER_11dBm); 
+    
     WiFi.begin(ssid, password);
-
-    unsigned long startAttemptTime = millis();
-    const unsigned long timeout = 20000; // 20-second connection timeout tracker
-    int dotCounter = 0;
-
-    while (WiFi.status() != WL_CONNECTED && (millis() - startAttemptTime < timeout)) {
+    
+    unsigned long startTry = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - startTry < 20000)) {
         delay(500);
-        dotCounter++;
-        
-        // Every few dots, print out the exact real-time error state code
-        if (dotCounter % 4 == 0) {
-            wl_status_t status = WiFi.status();
-            Serial.print(" [Status Code: ");
-            Serial.print(status);
-            Serial.print(" -> ");
-            
-            switch(status) {
-                case WL_NO_SHIELD:       Serial.print("WL_NO_SHIELD"); break;
-                case WL_IDLE_STATUS:     Serial.print("WL_IDLE_STATUS (Searching)"); break;
-                case WL_NO_SSID_AVAIL:   Serial.print("WL_NO_SSID_AVAIL (Network not found!)"); break;
-                case WL_SCAN_COMPLETED:  Serial.print("WL_SCAN_COMPLETED"); break;
-                case WL_CONNECT_FAILED:  Serial.print("WL_CONNECT_FAILED (Wrong Password?)"); break;
-                case WL_CONNECTION_LOST: Serial.print("WL_CONNECTION_LOST"); break;
-                case WL_DISCONNECTED:    Serial.print("WL_DISCONNECTED (Waiting...)"); break;
-                default:                 Serial.print("UNKNOWN_ERROR"); break;
-            }
-            Serial.println("]");
-        } else {
-            Serial.print(".");
-        }
+        Serial.print(".");
     }
-
-    // 3. Final Evaluation
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("\n\n>>> SUCCESS! Wi-Fi Connected. <<<");
-        Serial.print("Assigned IP Address: ");
-        Serial.println(WiFi.localIP());
-        Serial.print("Signal Strength (RSSI): ");
-        Serial.print(WiFi.RSSI());
-        Serial.println(" dBm");
-        Serial.println("=========================================\n");
+    
+    if(WiFi.status() == WL_CONNECTED) {
+        Serial.printf("\nConnected! IP: %s | RSSI: %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+        
+        // Sync Time via NTP
+        configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+        struct tm timeinfo;
+        if(getLocalTime(&timeinfo)){
+            strftime(sysTime, sizeof(sysTime), "%H:%M", &timeinfo);
+            Serial.printf("Time Synced: %s\n", sysTime);
+        }
     } else {
-        Serial.println("\n\n>>> FAILURE: Wi-Fi Connection Timed Out! <<<");
-        Serial.println("Troubleshooting Checklist:");
-        Serial.println("1. Is your router broadcasting a 2.4GHz band? (ESP32 cannot see 5GHz networks)");
-        Serial.println("2. Double check special characters in secret.ini.");
-        Serial.println("3. Move the ESP32-C3 closer to your router to rule out signal drops.");
-        Serial.println("=========================================\n");
+        Serial.println("\nConnection timed out. Retrying next cycle.");
     }
 }
 
 void fetchFinancialData() {
-    if (WiFi.status() == WL_CONNECTED) {
-        WiFiClientSecure client;
-        // In a production environment, you should supply the root certificate.
-        // For testing, we tell the ESP32-C3 to skip strict certificate validation.
-        client.setInsecure(); 
+    if (WiFi.status() != WL_CONNECTED) return;
 
-        HTTPClient http;
-        if (http.begin(client, apiEndpoint)) {
-            int httpCode = http.GET();
-            if (httpCode == HTTP_CODE_OK) {
-                String payload = http.getString();
-                
-                // Parse the JSON structure
-                JsonDocument doc;
-                DeserializationError error = deserializeJson(doc, payload);
-                
-                if (!error) {
-                    // Update variables from real payload (adapted map keys)
-                    // (Using mock keys matching popular index aggregators)
-                    sp500Change = doc["sp500-tracked-fund"]["usd_24h_change"] | 1.25; 
-                    nasdaqChange = doc["nasdaq-tracked-fund"]["usd_24h_change"] | -0.62;
-                    
-                    // Simple simulated timestamp update upon success
-                    // (Real time tracking can later use the built-in configTime/NTP)
-                    static int minCounter = 0;
-                    snprintf(sysTime, sizeof(sysTime), "10:%02d", minCounter++ % 60);
-                    
-                    Serial.println("Data fetched and updated successfully.");
-                } else {
-                    Serial.print("JSON parsing failed: ");
-                    Serial.println(error.c_str());
-                }
-            } else {
-                Serial.printf("HTTP request failed, error code: %s\n", http.errorToString(httpCode).c_str());
+    WiFiClientSecure client;
+    client.setInsecure(); // Skip intensive SSL certificate bundle verification processing
+
+    HTTPClient http;
+    if (http.begin(client, apiEndpoint)) {
+        int httpCode = http.GET();
+        if (httpCode == HTTP_CODE_OK) {
+            String payload = http.getString();
+            JsonDocument doc;
+            DeserializationError error = deserializeJson(doc, payload);
+            
+            if (!error) {
+                sp500Change  = doc["sp500-tracked-fund"]["usd_24h_change"] | 0.0; 
+                nasdaqChange = doc["nasdaq-tracked-fund"]["usd_24h_change"] | 0.0;
+                Serial.println("Financial markets updated via API.");
             }
-            http.end();
         }
+        http.end();
+    }
+    
+    // Update the clock string right before drawing
+    struct tm timeinfo;
+    if(getLocalTime(&timeinfo)){
+        strftime(sysTime, sizeof(sysTime), "%H:%M", &timeinfo);
     }
 }
 
 void drawStockRow(const char* name, float value, int16_t yPos) {
     display.setFont(&FreeSansBold12pt7b);
     display.setTextColor(GxEPD_BLACK);
-    
     display.setCursor(10, yPos);
     display.print(name);
     display.print(": ");
@@ -165,14 +122,14 @@ void drawStockRow(const char* name, float value, int16_t yPos) {
 }
 
 void updateDashboardScreen() {
-    display.setRotation(1);
+    display.setRotation(1); // 90-degree layout consistency rule
     display.setFullWindow();
     
     display.firstPage();
     do {
         display.fillScreen(GxEPD_WHITE);
 
-        // Header Status Bar
+        // Header Structure
         display.setFont(&FreeSans9pt7b);
         display.setTextColor(GxEPD_BLACK);
         display.setCursor(5, 20);
@@ -181,35 +138,40 @@ void updateDashboardScreen() {
         display.print(batLevel);
         display.drawFastHLine(0, 30, 200, GxEPD_BLACK);
 
-        // Core Market Data
+        // Indices Blocks
         drawStockRow("SP500", sp500Change, 90);
         drawStockRow("NASDQ", nasdaqChange, 150);
         
     } while (display.nextPage());
     
-    display.powerOff(); // Put screen down into low power mode safely
+    display.powerOff(); 
 }
 
 void setup() {
     Serial.begin(115200);
-    delay(5000);
-    while (!Serial) { 
-        delay(2000);
-    }
+    
+    // Wait max 5 seconds for serial connection setup
+    unsigned long entry = millis();
+    while (!Serial && (millis() - entry < 5000)) { delay(10); }
+
     SPI.begin(EPD_SCL, -1, EPD_SDA, EPD_CS); 
     display.init(115200, true, 2, false);
     
-    connectToWiFi();
-    
-    // Initial fetch and draw
+    // Run initial pipeline loop
+    connectAndSync();
     fetchFinancialData();
     updateDashboardScreen();
 }
 
 void loop() {
-    // Poll updates every 60 seconds
-    delay(60000);
-    Serial.println("Polling new network data...");
+    // Poll updates every 15 seconds
+    delay(15000);
+    
+    // Verify network sanity before execution pass
+    if (WiFi.status() != WL_CONNECTED) {
+        connectAndSync();
+    }
+    
     fetchFinancialData();
     updateDashboardScreen();
 }
