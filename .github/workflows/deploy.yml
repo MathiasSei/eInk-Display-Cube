@@ -5,6 +5,10 @@ on:
     branches:
       - main # Triggers instantly whenever you push code to the main branch
 
+# 👇 CRITICAL FIX: Grant permissions to create and write releases
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -24,7 +28,6 @@ jobs:
     - name: Compile Firmware with Dynamic Version and Secrets
       run: pio run
       env:
-        # GitHub maps these directly from your Repository Secrets settings!
         PLATFORMIO_BUILD_FLAGS: |
           -DFIRMWARE_VERSION=\"v${{ github.run_number }}\"
           -DWIFI_SSID=\"${{ secrets.WIFI_SSID }}\"
