@@ -1,0 +1,41 @@
+name: Compile and Release Firmware
+
+on:
+  push:
+    branches:
+      - main # Triggers instantly whenever you push code to the main branch
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install PlatformIO
+      run: pip install platformio
+
+    - name: Compile Firmware with Dynamic Version and Secrets
+      run: pio run
+      env:
+        # GitHub maps these directly from your Repository Secrets settings!
+        PLATFORMIO_BUILD_FLAGS: |
+          -DFIRMWARE_VERSION=\"v${{ github.run_number }}\"
+          -DWIFI_SSID=\"${{ secrets.WIFI_SSID }}\"
+          -DWIFI_PASS=\"${{ secrets.WIFI_PASS }}\"
+          -DAWS_API_KEY=\"${{ secrets.AWS_API_KEY }}\"
+
+    - name: Create Continuous Release and Upload Binary
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: latest
+        name: Continuous Build v${{ github.run_number }}
+        files: .pio/build/*/firmware.bin
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,10 @@
+Pins:
+ESP32-C3    Eink
+3.3         VCC
+G           GND
+SDA         6
+SCL         4
+CS          10
+D/C         2
+RES         3
+BUSY        1

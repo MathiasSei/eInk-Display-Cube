@@ -1,205 +1,134 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include <WiFiClientSecure.h>
-#include <ArduinoJson.h>
-#include <time.h>
+#include <HTTPUpdate.h>
+
+// E-ink Display Libraries
 #include <GxEPD2_BW.h>
-#include <Fonts/FreeSans9pt7b.h>
-#include <Fonts/FreeSansBold12pt7b.h>
+#include <Fonts/FreeSansBold9pt7b.h>
 
-// Screen Pins Configuration
-#define EPD_CS    10
-#define EPD_DC    2
-#define EPD_RST   3
-#define EPD_BUSY  1
-#define EPD_SCL   4  
-#define EPD_SDA   6  
+// ==========================================
+// AUTOMATED VERSIONING FALLBACK
+// ==========================================
+#ifndef FIRMWARE_VERSION
+  #define FIRMWARE_VERSION "v0.0.0-local"
+#endif
 
-GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT> display(GxEPD2_154_D67(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
+// Your GitHub repository target release link
+const char* githubReleaseUrl = "https://github.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME/releases/latest/download/firmware.bin";
 
-// Environment Secret Declarations
-const char* ssid     = SECRET_SSID;
-const char* password = SECRET_PASS;
+// ==========================================
+// YOUR EXACT ESP32-C3 TO E-INK PIN MAPPING
+// ==========================================
+#define EINK_SS    10  // CS
+#define EINK_DC    2   // D/C
+#define EINK_RST   3   // RES
+#define EINK_BUSY  1   // BUSY
 
-// Global application variables
-char sysTime[6] = "--:--";
-char batLevel[6] = "100%"; 
-float sp500Change = 0.0;
-float nasdaqChange = 0.0;
+GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT> display(GxEPD2_154_D67(EINK_SS, EINK_DC, EINK_RST, EINK_BUSY));
 
-// Time Server Configuration (Set to your local UTC offset, e.g., 3600 for GMT+1)
-const char* ntpServer  = "pool.ntp.org";
-const long  gmtOffset_sec = 3600; 
-const int   daylightOffset_sec = 3600;
+// RTC Memory Counter to track deep sleep cycles visually
+RTC_DATA_ATTR int wakeCount = 0; 
 
-void connectAndSync() {
-    Serial.println("\n--- Initiating Wi-Fi Secure Connection ---");
-    
-    WiFi.disconnect(true);
-    delay(500);
-    WiFi.mode(WIFI_STA);
-    WiFi.setMinSecurity(WIFI_AUTH_WPA2_PSK);
-    
-    // PERMANENT ANTENNA FIX: Drop transmission power to mitigate RF reflection crash
-    WiFi.setTxPower(WIFI_POWER_11dBm); 
-    
-    WiFi.begin(ssid, password);
-    
-    unsigned long startTry = millis();
-    while (WiFi.status() != WL_CONNECTED && (millis() - startTry < 20000)) {
-        delay(500);
-        Serial.print(".");
-    }
-    
-    if(WiFi.status() == WL_CONNECTED) {
-        Serial.printf("\nConnected! IP: %s | RSSI: %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
-        
-        // Sync Time via NTP
-        configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-        struct tm timeinfo;
-        if(getLocalTime(&timeinfo)){
-            strftime(sysTime, sizeof(sysTime), "%H:%M", &timeinfo);
-            Serial.printf("Time Synced: %s\n", sysTime);
-        }
-    } else {
-        Serial.println("\nConnection timed out. Retrying next cycle.");
-    }
-}
-
-// Update your endpoint string at the top of the file to use these verified asset IDs:
-const char* apiEndpoint = "https://api.coingecko.com/api/v3/simple/price?ids=spdr-s-p-500-etf-trust,invesco-qqq-trust&vs_currencies=usd&include_24hr_change=true";
-
-void fetchFinancialData() {
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("❌ Cannot fetch data: Wi-Fi is disconnected!");
-        return;
-    }
-
-    Serial.println("\n-----------------------------------------");
-    Serial.println("        API HTTP REQUEST DEBUG           ");
-    Serial.println("-----------------------------------------");
-    Serial.printf("Pinging URL: %s\n", apiEndpoint);
+// ==========================================
+// OVER-THE-AIR (OTA) UPDATE ROUTINE
+// ==========================================
+void checkForUpdates() {
+    if (WiFi.status() != WL_CONNECTED) return;
 
     WiFiClientSecure client;
-    client.setInsecure(); // Skip certificate tracking to save RAM
+    client.setInsecure(); 
+    httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
-    HTTPClient http;
-    if (http.begin(client, apiEndpoint)) {
-        int httpCode = http.GET();
-        Serial.printf("HTTP Response Code from Server: %d\n", httpCode);
-
-        if (httpCode == HTTP_CODE_OK) {
-            String payload = http.getString();
-            
-            // CRITICAL DEBUG: Print the raw server payload directly to console
-            Serial.println("--- RAW JSON PAYLOAD RECEIVED ---");
-            Serial.println(payload); 
-            Serial.println("---------------------------------");
-
-            JsonDocument doc;
-            DeserializationError error = deserializeJson(doc, payload);
-            
-            if (!error) {
-                // Extract using the updated valid tracking keys
-                sp500Change  = doc["spdr-s-p-500-etf-trust"]["usd_24h_change"] | 0.0; 
-                nasdaqChange = doc["invesco-qqq-trust"]["usd_24h_change"] | 0.0;
-                
-                Serial.println("Parsed values successfully:");
-                Serial.printf(" -> S&P 500 (SPY Proxy): %.2f%%\n", sp500Change);
-                Serial.printf(" -> Nasdaq (QQQ Proxy): %.2f%%\n", nasdaqChange);
-            } else {
-                Serial.print("❌ JSON Deserialization Failed: ");
-                Serial.println(error.c_str());
-            }
-        } else {
-            Serial.printf("❌ HTTP GET Request Failed. Error string: %s\n", http.errorToString(httpCode).c_str());
-        }
-        http.end();
-    } else {
-        Serial.println("❌ Unable to connect to the API server host.");
-    }
+    Serial.printf("📡 Checking GitHub... Current version: %s\n", FIRMWARE_VERSION);
     
-    // Refresh local time tracking
-    struct tm timeinfo;
-    if(getLocalTime(&timeinfo)){
-        strftime(sysTime, sizeof(sysTime), "%H:%M", &timeinfo);
+    t_httpUpdate_return ret = httpUpdate.update(client, githubReleaseUrl, FIRMWARE_VERSION);
+
+    switch(ret) {
+        case HTTP_UPDATE_FAILED:
+            Serial.printf("❌ OTA Failed (%d): %s\n", httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
+            break;
+        case HTTP_UPDATE_NO_UPDATES:
+            Serial.println("✅ Firmware is up-to-date.");
+            break;
+        case HTTP_UPDATE_OK:
+            Serial.println("🎉 Success! Restarting...");
+            ESP.restart();
+            break;
     }
-    Serial.println("=========================================\n");
 }
 
-void drawStockRow(const char* name, float value, int16_t yPos) {
-    display.setFont(&FreeSansBold12pt7b);
+// ==========================================
+// MAIN EXECUTION FLOW
+// ==========================================
+void setup() {
+    Serial.begin(115200);
+    wakeCount++;
+    
+    Serial.println("\n--- ESP32-C3 Wake Cycle ---");
+    
+    // Initialize E-ink Panel using mapped pins
+    SPI.begin(4, -1, 6, EINK_SS); 
+    display.init(115200); 
+
+    // Antenna Brownout Patch: Lower transmit power to stabilize weak connections
+    WiFi.mode(WIFI_STA);
+    WiFi.setTxPower(WIFI_POWER_15dBm); 
+
+    Serial.print("📶 Connecting to Wi-Fi...");
+    // WIFI_SSID and WIFI_PASS are fed directly by your Environment Variables!
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    
+    int attemptCounter = 0;
+    while (WiFi.status() != WL_CONNECTED && attemptCounter < 20) {
+        delay(500);
+        Serial.print(".");
+        attemptCounter++;
+    }
+
+    bool wifiSuccess = (WiFi.status() == WL_CONNECTED);
+    String connectedNetwork = wifiSuccess ? WIFI_SSID : "CONNECTION FAILED";
+
+    if (wifiSuccess) {
+        Serial.println("\n✅ Connected!");
+        checkForUpdates();
+    } else {
+        Serial.println("\n❌ Wi-Fi Connection failed.");
+    }
+
+    // Render Diagnostics UI to E-ink
+    display.setRotation(1); 
+    display.setFont(&FreeSansBold9pt7b);
     display.setTextColor(GxEPD_BLACK);
-    display.setCursor(10, yPos);
-    display.print(name);
-    display.print(": ");
 
-    char buffer[10];
-    snprintf(buffer, sizeof(buffer), "%s%.2f%%", (value >= 0) ? "+" : "", value);
-
-    if (value < 0) {
-        int16_t tbx, tby; uint16_t tbw, tbh;
-        display.getTextBounds(buffer, display.getCursorX(), yPos, &tbx, &tby, &tbw, &tbh);
-        display.fillRect(tbx - 2, tby - 2, tbw + 4, tbh + 4, GxEPD_BLACK);
-        display.setTextColor(GxEPD_WHITE);
-    } else {
-        display.setTextColor(GxEPD_BLACK);
-    }
-    display.print(buffer);
-}
-
-void updateDashboardScreen() {
-    display.setRotation(1); // 90-degree layout consistency rule
-    display.setFullWindow();
-    
     display.firstPage();
     do {
         display.fillScreen(GxEPD_WHITE);
-
-        // Header Structure
-        display.setFont(&FreeSans9pt7b);
-        display.setTextColor(GxEPD_BLACK);
-        display.setCursor(5, 20);
-        display.print(sysTime);
-        display.setCursor(150, 20);
-        display.print(batLevel);
-        display.drawFastHLine(0, 30, 200, GxEPD_BLACK);
-
-        // Indices Blocks
-        drawStockRow("SP500", sp500Change, 90);
-        drawStockRow("NASDQ", nasdaqChange, 150);
+        display.setCursor(10, 25);
+        display.print("SYSTEM DIAGNOSTICS");
+        display.drawFastHLine(0, 35, display.width(), GxEPD_BLACK);
         
+        display.setCursor(10, 60);
+        display.print("Version: ");
+        display.print(FIRMWARE_VERSION);
+        
+        display.setCursor(10, 95);
+        display.print("Net: ");
+        display.print(connectedNetwork);
+        
+        display.setCursor(10, 130);
+        display.print("Total Wakes: ");
+        display.print(wakeCount);
     } while (display.nextPage());
-    
+
+    // Disconnect peripherals to safe standby current draws
+    WiFi.disconnect(true);
     display.powerOff(); 
-}
 
-void setup() {
-    Serial.begin(115200);
-    
-    // Wait max 5 seconds for serial connection setup
-    unsigned long entry = millis();
-    while (!Serial && (millis() - entry < 5000)) { delay(10); }
-
-    SPI.begin(EPD_SCL, -1, EPD_SDA, EPD_CS); 
-    display.init(115200, true, 2, false);
-    
-    // Run initial pipeline loop
-    connectAndSync();
-    fetchFinancialData();
-    updateDashboardScreen();
+    Serial.println("😴 Entering deep sleep...");
+    ESP.deepSleep(60 * 1000000); 
 }
 
 void loop() {
-    // Poll updates every 15 seconds
-    delay(15000);
-    
-    // Verify network sanity before execution pass
-    if (WiFi.status() != WL_CONNECTED) {
-        connectAndSync();
-    }
-    
-    fetchFinancialData();
-    updateDashboardScreen();
+    // Unused
 }
