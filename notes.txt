@@ -8,3 +8,9 @@ CS          10
 D/C         2
 RES         3
 BUSY        1
+
+F Fetching
+R Ready/Reconnecting
+W Wait/Displaying Page
+S Sleep
+X Error
