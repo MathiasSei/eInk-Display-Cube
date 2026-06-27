@@ -247,14 +247,33 @@ void updateDisplay(const char* stepMsg) {
 }
 
 void syncTime() {
-    Serial.println("[NTP] Contacting time servers for Oslo Sync...");
-    configTime(0, 0, "no.pool.ntp.org", "pool.ntp.org");
+    Serial.println("[NTP] Configuring Oslo Timezone parameters...");
+    
+    // 1. Set the environment time zone string FIRST
+    // CET-1CEST means standard time is UTC+1, daylight savings (CEST) is UTC+2
     setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
     tzset();
+
+    // 2. Start the network clock sync request
+    configTime(0, 0, "no.pool.ntp.org", "pool.ntp.org");
+    
     struct tm timeinfo;
     int retry = 0;
-    while ((!getLocalTime(&timeinfo) || timeinfo.tm_year < 120) && retry++ < 20) { delay(500); Serial.print("."); }
+    
+    // 3. Block and wait until NTP securely fetches the true calendar time
+    while ((!getLocalTime(&timeinfo) || timeinfo.tm_year < 120) && retry++ < 20) { 
+        delay(500); 
+        Serial.print("."); 
+    }
     Serial.println();
+    
+    if (getLocalTime(&timeinfo) && timeinfo.tm_year >= 120) {
+        char debugTime[32];
+        strftime(debugTime, sizeof(debugTime), "%Y-%m-%d %H:%M:%S", &timeinfo);
+        Serial.printf("[NTP] Oslo Clock Sync Successful: %s\n", debugTime);
+    } else {
+        Serial.println("[NTP] ERROR: Time sync timed out. Clock might be inaccurate.");
+    }
 }
 
 bool fetchAPIData() {
