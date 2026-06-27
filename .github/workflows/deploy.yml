@@ -28,17 +28,23 @@ jobs:
     - name: Compile Firmware with Dynamic Version and Secrets
       run: pio run
       env:
-        PLATFORMIO_BUILD_FLAGS: |
-          -DFIRMWARE_VERSION=\"v${{ github.run_number }}\"
-          -DWIFI_SSID=\"${{ secrets.WIFI_SSID }}\"
-          -DWIFI_PASS=\"${{ secrets.WIFI_PASS }}\"
-          -DAWS_API_KEY=\"${{ secrets.AWS_API_KEY }}\"
+        FIRMWARE_VERSION: "v${{ github.run_number }}"
+        WIFI_SSID: "${{ secrets.WIFI_SSID }}"
+        WIFI_PASS: "${{ secrets.WIFI_PASS }}"
+        AWS_API_KEY: "${{ secrets.AWS_API_KEY }}"
+
+    - name: Generate Version Text File
+      run: |
+        mkdir -p .pio/build/esp32-c3-devkitm-1
+        echo "v${{ github.run_number }}" > .pio/build/esp32-c3-devkitm-1/version.txt
 
     - name: Create Continuous Release and Upload Binary
       uses: softprops/action-gh-release@v2
       with:
         tag_name: latest
         name: Continuous Build v${{ github.run_number }}
-        files: .pio/build/*/firmware.bin
+        files: |
+          .pio/build/esp32-c3-devkitm-1/firmware.bin
+          .pio/build/esp32-c3-devkitm-1/version.txt
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

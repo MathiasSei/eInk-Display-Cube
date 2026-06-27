@@ -15,7 +15,8 @@
 #endif
 
 // Your GitHub repository target release link
-const char* githubReleaseUrl = "https://github.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME/releases/latest/download/firmware.bin";
+const char* githubReleaseUrl = "https://github.com/MathiasSei/Projects/releases/latest/download/firmware.bin";
+const char* githubVersionUrl = "https://github.com/MathiasSei/Projects/releases/latest/download/version.txt";
 
 // ==========================================
 // YOUR EXACT ESP32-C3 TO E-INK PIN MAPPING
@@ -53,29 +54,52 @@ void checkForUpdates() {
         return;
     }
 
-    Serial.println("\n[OTA-DEBUG] Securely connecting to GitHub storage redirect channels...");
+    Serial.println("\n[OTA] Checking for available updates on GitHub...");
     WiFiClientSecure client;
     client.setInsecure(); 
-    httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
-    Serial.printf("[OTA-DEBUG] Query Target: %s\n", githubReleaseUrl);
-    Serial.printf("[OTA-DEBUG] Local Version ID: %s\n", FIRMWARE_VERSION);
+    HTTPClient http;
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     
-    Serial.println("[OTA-DEBUG] Transmitting HTTP manifest ping request...");
-    t_httpUpdate_return ret = httpUpdate.update(client, githubReleaseUrl, FIRMWARE_VERSION);
-
-    switch(ret) {
-        case HTTP_UPDATE_FAILED:
-            Serial.printf("❌ OTA Update Block Failed! Internal Error Code (%d): %s\n", 
-                          httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
-            break;
-        case HTTP_UPDATE_NO_UPDATES:
-            Serial.println("✅ GitHub Response: No updates found. Device is running latest binary release build.");
-            break;
-        case HTTP_UPDATE_OK:
-            Serial.println("🎉 OTA Success! New firmware payload flashed into staging partition. Resetting MCU...");
-            ESP.restart();
-            break;
+    Serial.printf("[OTA] Local Version: %s\n", FIRMWARE_VERSION);
+    Serial.printf("[OTA] Querying version tag from: %s\n", githubVersionUrl);
+    
+    if (http.begin(client, githubVersionUrl)) {
+        int httpCode = http.GET();
+        if (httpCode == HTTP_CODE_OK) {
+            String latestVersion = http.getString();
+            latestVersion.trim(); // Clean up whitespace/newlines
+            Serial.printf("[OTA] Latest Version: %s\n", latestVersion.c_str());
+            
+            if (latestVersion != FIRMWARE_VERSION) {
+                Serial.printf("[OTA] New firmware version %s available. Starting download...\n", latestVersion.c_str());
+                
+                httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+                t_httpUpdate_return ret = httpUpdate.update(client, githubReleaseUrl);
+                
+                switch(ret) {
+                    case HTTP_UPDATE_FAILED:
+                        Serial.printf("❌ [OTA] Update failed! Error (%d): %s\n", 
+                                      httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
+                        break;
+                    case HTTP_UPDATE_NO_UPDATES:
+                        Serial.println("✅ [OTA] No updates found.");
+                        break;
+                    case HTTP_UPDATE_OK:
+                        Serial.println("🎉 [OTA] Success! New firmware flashed. Restarting MCU...");
+                        delay(500);
+                        ESP.restart();
+                        break;
+                }
+            } else {
+                Serial.println("✅ [OTA] Device is up to date. Skipping update.");
+            }
+        } else {
+            Serial.printf("❌ [OTA] Version check failed. HTTP Error: %d\n", httpCode);
+        }
+        http.end();
+    } else {
+        Serial.println("❌ [OTA] Connection to GitHub version check failed.");
     }
 }
 
@@ -189,7 +213,7 @@ void setup() {
     // 6. Safe Shutdown sequence 
     Serial.println("\n😴 [Power-Management] Isolating peripherals for standby conservation...");
     WiFi.disconnect(true);
-    display.powerOff(); 
+    display.hibernate(); 
 
     Serial.println("😴 [Power-Management] Entering deep sleep sequence for 60 seconds.");
     Serial.println("====================================================================\n");
