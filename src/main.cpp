@@ -31,6 +31,9 @@ GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT> display(GxEPD2_154_D67(EINK_SS
 // RTC Memory Counter to track deep sleep cycles visually
 RTC_DATA_ATTR int wakeCount = 0; 
 
+int tickCount = 0;
+bool isFirstDraw = true;
+
 // Helper function to turn numeric Wi-Fi status codes into readable text strings
 const char* getWiFiStatusName(wl_status_t status) {
     switch (status) {
@@ -46,15 +49,64 @@ const char* getWiFiStatusName(wl_status_t status) {
 }
 
 // ==========================================
+// E-INK DIAGNOSTICS DISPLAY ROUTINE
+// ==========================================
+void updateDisplay(const char* step, int tick) {
+    Serial.printf("\n📺 [Display] Updating: Step='%s', Tick=%d\n", step, tick);
+    display.setRotation(3); // Turn screen 90 degrees clockwise
+    display.setFont(&FreeSansBold9pt7b);
+    display.setTextColor(GxEPD_BLACK);
+    
+    // For the first draw, do a full refresh to clean any old image.
+    // For subsequent draws, use partial refresh.
+    if (!isFirstDraw) {
+        display.setPartialWindow(0, 0, display.width(), display.height());
+    } else {
+        isFirstDraw = false;
+    }
+    
+    display.firstPage();
+    do {
+        display.fillScreen(GxEPD_WHITE);
+        display.setCursor(10, 20);
+        display.print("DEBUG DIAGNOSTIC");
+        display.drawFastHLine(0, 28, display.width(), GxEPD_BLACK);
+        
+        display.setCursor(10, 56);
+        display.print("Version: ");
+        display.print(FIRMWARE_VERSION);
+        
+        display.setCursor(10, 84);
+        display.print("SSID: ");
+        display.print(WIFI_SSID);
+        
+        display.setCursor(10, 112);
+        display.print("PASS: ");
+        display.print(WIFI_PASS);
+        
+        display.setCursor(10, 140);
+        display.print("Step: ");
+        display.print(step);
+        
+        display.setCursor(10, 168);
+        display.print("Tick: ");
+        display.print(tick);
+    } while (display.nextPage());
+    Serial.println("✅ [Display] Update finished.");
+}
+
+// ==========================================
 // OVER-THE-AIR (OTA) UPDATE ROUTINE
 // ==========================================
 void checkForUpdates() {
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("❌ OTA Cancelled: Cannot check for updates because Wi-Fi is not connected.");
+        updateDisplay("OTA Cancel: No WiFi", tickCount);
         return;
     }
 
     Serial.println("\n[OTA] Checking for available updates on GitHub...");
+    updateDisplay("Checking OTA", tickCount);
     WiFiClientSecure client;
     client.setInsecure(); 
 
@@ -73,6 +125,7 @@ void checkForUpdates() {
             
             if (latestVersion != FIRMWARE_VERSION) {
                 Serial.printf("[OTA] New firmware version %s available. Starting download...\n", latestVersion.c_str());
+                updateDisplay("Downloading OTA...", tickCount);
                 
                 httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
                 t_httpUpdate_return ret = httpUpdate.update(client, githubReleaseUrl);
@@ -81,25 +134,31 @@ void checkForUpdates() {
                     case HTTP_UPDATE_FAILED:
                         Serial.printf("❌ [OTA] Update failed! Error (%d): %s\n", 
                                       httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
+                        updateDisplay("OTA Failed", tickCount);
                         break;
                     case HTTP_UPDATE_NO_UPDATES:
                         Serial.println("✅ [OTA] No updates found.");
+                        updateDisplay("OTA No Updates", tickCount);
                         break;
                     case HTTP_UPDATE_OK:
                         Serial.println("🎉 [OTA] Success! New firmware flashed. Restarting MCU...");
+                        updateDisplay("OTA Success: Restart", tickCount);
                         delay(500);
                         ESP.restart();
                         break;
                 }
             } else {
                 Serial.println("✅ [OTA] Device is up to date. Skipping update.");
+                updateDisplay("OTA Up-to-date", tickCount);
             }
         } else {
             Serial.printf("❌ [OTA] Version check failed. HTTP Error: %d\n", httpCode);
+            updateDisplay("OTA Check Error", tickCount);
         }
         http.end();
     } else {
         Serial.println("❌ [OTA] Connection to GitHub version check failed.");
+        updateDisplay("OTA Connect Error", tickCount);
     }
 }
 
@@ -131,6 +190,8 @@ void setup() {
     display.init(115200); 
     Serial.println("✅ [Hardware-Init] E-ink Panel driver engine mounted.");
 
+    updateDisplay("Booting...", tickCount);
+
     // 3. Radio optimization adjustments
     Serial.println("\n🔧 [Radio-Config] Forcing Station Mode configuration settings...");
     WiFi.mode(WIFI_STA);
@@ -148,6 +209,8 @@ void setup() {
         Serial.println("⚠️ WARNING: Your environment variables may have compiled as blank dummy templates!");
     }
 
+    updateDisplay("WiFi Connecting", tickCount);
+
     Serial.print("📶 [Wi-Fi] Sending radio connection request sequence...");
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     
@@ -164,12 +227,13 @@ void setup() {
     }
 
     bool wifiSuccess = (trackingStatus == WL_CONNECTED);
-    String connectedNetwork = wifiSuccess ? WIFI_SSID : "CONNECTION FAILED";
 
     if (wifiSuccess) {
         Serial.println("\n\n✅ [Wi-Fi] Connection authenticated successfully!");
         Serial.print("   -> Internal Local Static IP Target Address: ");
         Serial.println(WiFi.localIP());
+        
+        updateDisplay("WiFi Connected", tickCount);
         
         // Advance directly to update tracking block
         checkForUpdates();
@@ -177,51 +241,29 @@ void setup() {
         Serial.println("\n\n❌ [Wi-Fi] Connection timed out after 30 seconds.");
         Serial.printf("   -> Termination Status: %s\n", getWiFiStatusName(trackingStatus));
         Serial.println("   -> Suggestion: Check terminal environments or solder a bulk cap across 3V3/GND.");
+        updateDisplay("WiFi Fail", tickCount);
     }
 
-    // 5. Draw Diagnostics UI elements onto E-ink screen
-    Serial.println("\n📺 [Display] Drawing diagnostics overlay to E-ink buffer frame...");
-    display.setRotation(2); // Set rotation to 180 degrees
-    display.setFont(&FreeSansBold9pt7b);
-    display.setTextColor(GxEPD_BLACK);
-
-    display.firstPage();
-    do {
-        display.fillScreen(GxEPD_WHITE);
-        display.setCursor(10, 20);
-        display.print("SYSTEM DIAGNOSTICS");
-        display.drawFastHLine(0, 28, display.width(), GxEPD_BLACK);
-        
-        display.setCursor(10, 50);
-        display.print("Version: ");
-        display.print(FIRMWARE_VERSION);
-        
-        display.setCursor(10, 78);
-        display.print("SSID: ");
-        display.print(WIFI_SSID); 
-        
-        display.setCursor(10, 106);
-        display.print("PASS: ");
-        display.print(WIFI_PASS); 
-        
-        display.setCursor(10, 134);
-        display.print("Total Wakes: ");
-        display.print(wakeCount);
-    } while (display.nextPage());
-    Serial.println("✅ [Display] Framebuffer successfully drawn onto hardware screen layout.");
-
-    // 6. Safe Shutdown sequence 
-    Serial.println("\n😴 [Power-Management] Isolating peripherals for standby conservation...");
-    WiFi.disconnect(true);
-    display.hibernate(); 
-
-    Serial.println("😴 [Power-Management] Entering deep sleep sequence for 60 seconds.");
-    Serial.println("====================================================================\n");
-    Serial.flush(); // Wait for all serial transmission text bytes to fully emit
-    
-    ESP.deepSleep(20 * 1000000); 
+    Serial.println("\nℹ️ [System] Entering continuous development loop mode...");
+    updateDisplay("Ready / Running", tickCount);
 }
 
+unsigned long lastTickTime = 0;
+
 void loop() {
-    // Unused
+    if (millis() - lastTickTime >= 10000) {
+        lastTickTime = millis();
+        tickCount++;
+        Serial.printf("[Loop] Tick: %d\n", tickCount);
+        
+        String stepMsg = "Running (WiFi: ";
+        if (WiFi.status() == WL_CONNECTED) {
+            stepMsg += "ON)";
+        } else {
+            stepMsg += "OFF)";
+        }
+        
+        updateDisplay(stepMsg.c_str(), tickCount);
+    }
+    delay(100);
 }
