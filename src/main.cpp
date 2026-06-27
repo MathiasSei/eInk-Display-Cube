@@ -67,7 +67,7 @@ void setup() {
     Serial.println("[Display] Initializing custom SPI & E-Ink screen...");
     SPI.begin(EINK_SCL, -1, EINK_SDA, EINK_CS); 
     display.init(115200, rtcIsFirstBoot, 10, false);
-    display.setRotation(1); // 90° Clockwise rotation
+    display.setRotation(3); // 90° Clockwise rotation
 
     if (rtcIsFirstBoot) {
         rtcIsFirstBoot = false;
@@ -249,9 +249,16 @@ void syncTime() {
 }
 
 bool fetchAPIData() {
+    // Create a secure WiFi client instance
+    WiFiClientSecure client;
+    // Tell the client to skip SSL certificate validation strings
+    client.setInsecure(); 
+
     HTTPClient http;
-    Serial.printf("[HTTP] Connecting to endpoint: %s\n", awsEndpoint);
-    http.begin(awsEndpoint);
+    Serial.printf("[HTTP] Connecting to endpoint safely: %s\n", awsEndpoint);
+    
+    // Pass the insecure client along with the endpoint string
+    http.begin(client, awsEndpoint);
     http.addHeader("X-API-Key", AWS_API_KEY);
     
     int httpCode = http.GET();
