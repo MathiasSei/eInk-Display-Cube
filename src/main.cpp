@@ -7,6 +7,7 @@
 #include <SPI.h>
 #include <time.h>
 #include <Preferences.h>
+#include <esp_wifi.h> // Required for advanced radio adjustments
 
 // --- Font Inclusions for Variable Layout Sizing ---
 #include <Fonts/FreeSans9pt7b.h>       // Size 1 (Small)
@@ -57,6 +58,12 @@ void setup() {
     Serial.println("\n--- ESP32-C3 Wakeup / Flash Memory Mode ---");
     loadStateFromFlash(); 
     
+    // FOOLPROOF TIMEZONE FIX:
+    // Re-apply the Oslo POSIX timezone rules immediately upon every single wakeup.
+    // This instantly converts the raw deep-sleep hardware clock back to local Oslo time.
+    setenv("TZ", "CET-1CEST-2,M3.5.0/02:00:00,M10.5.0/03:00:00", 1);
+    tzset();
+    
     // Initialize Display
     SPI.begin(EINK_SCL, -1, EINK_SDA, EINK_CS); 
     display.init(115200, rtcIsFirstBoot, 10, false);
@@ -72,25 +79,30 @@ void setup() {
         saveStateToFlash();
     }
 
-    // Network Sync Block
+    // Network Sync Block (Only connects to Wi-Fi when the data cache expires)
     if (!rtcHasValidData || rtcPageCount == 0) {
         if (rtcFailCount > 0) statusIcon = 'R'; 
         
+        Serial.println("[Network] Cache empty. Activating Robust Wi-Fi Stack...");
+        
         WiFi.mode(WIFI_STA);
+        esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B); // Long-range fallback
         WiFi.begin(LOCAL_SSID, LOCAL_PASS);
+        esp_wifi_set_ps(WIFI_PS_NONE); // High sensitivity mode
         WiFi.setTxPower(WIFI_POWER_15dBm); 
 
         int retry = 0;
-        while (WiFi.status() != WL_CONNECTED && retry++ < 30) {
+        while (WiFi.status() != WL_CONNECTED && retry++ < 40) {
             delay(500);
             Serial.print(".");
         }
         Serial.println();
 
         if (WiFi.status() != WL_CONNECTED) {
-            handleError("WiFi Disconnected");
+            handleError("WiFi Link Timeout");
         }
         
+        // This syncs the underlying Unix timestamp via NTP internet servers
         syncTime();
 
         statusIcon = 'F';
@@ -110,7 +122,7 @@ void setup() {
 
     statusIcon = 'W'; 
     Serial.printf("[UI] Rendering Page %d/%d...\n", (int)rtcCurrentPageIndex + 1, (int)rtcPageCount);
-    updateDisplay(""); // Passing empty string since step string logic has been deprecated
+    updateDisplay(""); 
 
     // Increment pagination tracking
     rtcCurrentPageIndex++;
@@ -166,6 +178,8 @@ void drawLayout(const char* stepMsg) {
     
     // --- Top Bar Layout ---
     display.setFont(&FreeSans9pt7b);
+    
+    // 1. Time string aligned to the far LEFT
     struct tm timeinfo;
     char timeStr[6] = "--:--";
     if (getLocalTime(&timeinfo) && timeinfo.tm_year >= 120) { 
@@ -174,11 +188,17 @@ void drawLayout(const char* stepMsg) {
     display.setCursor(5, 20);
     display.print(timeStr);
 
-    // Dynamic Pagination Counter inside top header string bar
-    char topRightStr[32];
-    snprintf(topRightStr, sizeof(topRightStr), "[%d/%d] N/A%% [%c]", (int)rtcCurrentPageIndex + 1, (int)rtcPageCount, statusIcon);
-    display.setCursor(display.width() - 120, 20);
-    display.print(topRightStr);
+    // 2. Pure page counter aligned in the MIDDLE
+    char midPageStr[16];
+    snprintf(midPageStr, sizeof(midPageStr), "%d/%d", (int)rtcCurrentPageIndex + 1, (int)rtcPageCount);
+    // 200px wide screen means the center coordinate is 100. We offset roughly half the text width.
+    display.setCursor(88, 20); 
+    display.print(midPageStr);
+
+    // 3. Battery string aligned to the far RIGHT
+    char rightBatStr[16] = "N/A%";
+    display.setCursor(display.width() - 48, 20);
+    display.print(rightBatStr);
 
     display.drawFastHLine(0, 30, display.width(), GxEPD_BLACK);
 
@@ -200,7 +220,7 @@ void drawLayout(const char* stepMsg) {
     snprintf(pageKey, sizeof(pageKey), "p_%d_cnt", (int)rtcCurrentPageIndex);
     int itemsInPage = prefs.getInt(pageKey, 0);
 
-    int yStart = 65; // Shift layout up slightly since we cleared the placeholder row
+    int yStart = 65; 
     for (int i = 0; i < itemsInPage; i++) {
         char kStr[32] = "";
         char vStr[64] = "";
@@ -212,24 +232,22 @@ void drawLayout(const char* stepMsg) {
         prefs.getString(pageKey, vStr, sizeof(vStr));
 
         snprintf(pageKey, sizeof(pageKey), "p_%d_s_%d", (int)rtcCurrentPageIndex, i);
-        int fontSize = prefs.getInt(pageKey, 2); // Fallback defaults to medium template layouts
+        int fontSize = prefs.getInt(pageKey, 2); 
 
-        // Assign active font layer pointer dynamically based on API parameter
         if (fontSize == 1) {
             display.setFont(&FreeSans9pt7b);
-            yStart += 5; // Balanced line space offset adjustment
+            yStart += 5; 
         } else if (fontSize == 3) {
             display.setFont(&FreeSansBold12pt7b);
             yStart += 12;
         } else {
-            display.setFont(&FreeSans12pt7b); // Default size 2
+            display.setFont(&FreeSans12pt7b); 
             yStart += 10;
         }
 
         display.setCursor(5, yStart);
         display.printf("%s: %s", kStr, vStr);
         
-        // Incremental vertical drop based on typographic scaling density bounds
         yStart += (fontSize == 1) ? 22 : (fontSize == 3) ? 35 : 28;
     }
     prefs.end();
@@ -247,33 +265,16 @@ void updateDisplay(const char* stepMsg) {
 }
 
 void syncTime() {
-    Serial.println("[NTP] Configuring Oslo Timezone parameters...");
-    
-    // 1. Set the environment time zone string FIRST
-    // CET-1CEST means standard time is UTC+1, daylight savings (CEST) is UTC+2
-    setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
-    tzset();
-
-    // 2. Start the network clock sync request
-    configTime(0, 0, "no.pool.ntp.org", "pool.ntp.org");
+    Serial.println("[NTP] Directly initializing Oslo Timezone with Auto DST...");
+    configTzTime("CET-1CEST-2,M3.5.0/02:00:00,M10.5.0/03:00:00", "no.pool.ntp.org", "pool.ntp.org");
     
     struct tm timeinfo;
     int retry = 0;
-    
-    // 3. Block and wait until NTP securely fetches the true calendar time
     while ((!getLocalTime(&timeinfo) || timeinfo.tm_year < 120) && retry++ < 20) { 
         delay(500); 
         Serial.print("."); 
     }
     Serial.println();
-    
-    if (getLocalTime(&timeinfo) && timeinfo.tm_year >= 120) {
-        char debugTime[32];
-        strftime(debugTime, sizeof(debugTime), "%Y-%m-%d %H:%M:%S", &timeinfo);
-        Serial.printf("[NTP] Oslo Clock Sync Successful: %s\n", debugTime);
-    } else {
-        Serial.println("[NTP] ERROR: Time sync timed out. Clock might be inaccurate.");
-    }
 }
 
 bool fetchAPIData() {
@@ -320,7 +321,7 @@ bool fetchAPIData() {
 
             const char* k = item["key"] | "";
             const char* v = item["value"] | "";
-            int s = item["size"] | 2; // Grab sizing integer parameter from json file structure path
+            int s = item["size"] | 2; 
 
             char storeKey[24];
             snprintf(storeKey, sizeof(storeKey), "p_%d_k_%d", (int)rtcPageCount, itemCount);
