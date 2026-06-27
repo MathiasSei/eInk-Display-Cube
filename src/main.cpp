@@ -54,11 +54,20 @@ bool fetchAPIData();
 
 void setup() {
     Serial.begin(115200);
+    delay(1000); // Give serial monitor time to connect on boot
+    
+    Serial.println("\n--- ESP32-C3 Wakeup / Power On ---");
+    Serial.printf("First Boot Flag: %s\n", rtcIsFirstBoot ? "TRUE" : "FALSE");
+    Serial.printf("Has Cached Valid Data: %s\n", rtcHasValidData ? "TRUE" : "FALSE");
+    Serial.printf("Current Page Index: %d\n", (int)rtcCurrentPageIndex);
+    Serial.printf("Accumulated Tick Counter: %d\n", rtcTickCounter);
+    Serial.printf("Consecutive Fail Count: %d\n", rtcFailCount);
     
     // 1. Manually route SPI pins to match your board
+    Serial.println("[Display] Initializing custom SPI & E-Ink screen...");
     SPI.begin(EINK_SCL, -1, EINK_SDA, EINK_CS); 
     display.init(115200, rtcIsFirstBoot, 10, false);
-    display.setRotation(3); // 90° Clockwise rotation
+    display.setRotation(1); // 90° Clockwise rotation
 
     if (rtcIsFirstBoot) {
         rtcIsFirstBoot = false;
@@ -70,27 +79,45 @@ void setup() {
 
     // 2. Connect to Wi-Fi
     if (rtcIsFirstBoot || !rtcHasValidData || rtcCurrentPageIndex == 0) {
+        Serial.println("[Network] Active cache expired or missing. Initiating network stack...");
         if (rtcFailCount > 0) statusIcon = 'R'; // Re-connecting indicator
         
+        Serial.printf("[WiFi] Connecting to SSID: %s\n", LOCAL_SSID);
+        
+        // Force Station Mode explicitly
+        WiFi.mode(WIFI_STA);
         WiFi.begin(LOCAL_SSID, LOCAL_PASS);
+
+        // --- Antenna Power Configuration Changes ---
+        // Set TX power limit to 11 dBm (represented as 44 quarter-dBm units on ESP32 frameworks, or direct float)
+        WiFi.setTxPower(WIFI_POWER_11dBm); 
+        Serial.printf("[WiFi] Radio TX Power manually clamped to: %d\n", WiFi.getTxPower());
+
         int retry = 0;
         while (WiFi.status() != WL_CONNECTED && retry++ < 30) {
             delay(500);
+            Serial.print(".");
         }
+        Serial.println();
 
         if (WiFi.status() != WL_CONNECTED) {
+            Serial.println("[ERROR] Wi-Fi Connection failed!");
             handleError();
         }
+        Serial.printf("[WiFi] Connected! IP Address: %s\n", WiFi.localIP().toString().c_str());
 
         syncTime();
 
         // 3. Fetch Data if cache is stale/empty
         statusIcon = 'F';
+        Serial.println("[API] Requesting fresh dashboard state from AWS...");
         updateDisplay(nullptr, "Fetching API...");
         if (!fetchAPIData()) {
+            Serial.println("[ERROR] Fetching API or Parsing JSON payload failed!");
             handleError();
         }
         
+        Serial.println("[Network] Turning off Wi-Fi radio to conserve power...");
         WiFi.disconnect(true);
         WiFi.mode(WIFI_OFF);
         rtcHasValidData = true;
@@ -102,6 +129,7 @@ void setup() {
     char stepBuffer[32];
     snprintf(stepBuffer, sizeof(stepBuffer), "Showing Page %d/%d", (int)rtcCurrentPageIndex + 1, (int)rtcPageCount);
     
+    Serial.printf("[UI] Rendering %s to E-Ink display...\n", stepBuffer);
     updateDisplay(&rtcPages[rtcCurrentPageIndex], stepBuffer);
 
     // Increment pagination indices
@@ -109,12 +137,15 @@ void setup() {
     rtcTickCounter += 10; // Simple increment tick logic
 
     if (rtcCurrentPageIndex >= rtcPageCount) {
-        rtcCurrentPageIndex = 0; // Next wake will force a fresh API pull
+        Serial.println("[Paging] Reached the end of available pages. Next boot will force fresh API pull.");
+        rtcCurrentPageIndex = 0; 
         rtcHasValidData = false; 
     }
 
     // 5. Enter Deep Sleep
     statusIcon = 'S';
+    Serial.printf("[Power] Dropping into Deep Sleep for %d seconds. See you next boot!\n", rtcPageDelaySec);
+    Serial.println("-----------------------------------------------\n");
     esp_sleep_enable_timer_wakeup(rtcPageDelaySec * 1000000ULL);
     Serial.flush();
     esp_deep_sleep_start();
@@ -176,23 +207,26 @@ void drawLayout(Page* page, const char* stepMsg) {
 }
 
 void updateDisplay(Page* page, const char* stepMsg) {
-    // If it's the very first render, do a full flash to clear ghosting. Otherwise, partial.
     if (rtcIsFirstBoot && rtcCurrentPageIndex == 0) {
+        Serial.println("[Display] Executing heavy FULL refresh cycle...");
         display.firstPage();
         do {
             drawLayout(page, stepMsg);
         } while (display.nextPage());
     } else {
+        Serial.println("[Display] Executing quick PARTIAL window refresh...");
         display.setPartialWindow(0, 0, display.width(), display.height());
         display.firstPage();
         do {
             drawLayout(page, stepMsg);
         } while (display.nextPage());
     }
+    Serial.println("[Display] Refresh cycle drawing finished.");
 }
 
 // --- Data & Sync Functions ---
 void syncTime() {
+    Serial.println("[NTP] Contacting time servers for Oslo Sync...");
     configTime(0, 0, "no.pool.ntp.org", "pool.ntp.org");
     setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
     tzset();
@@ -201,49 +235,67 @@ void syncTime() {
     int retry = 0;
     while (!getLocalTime(&timeinfo) && retry++ < 10) {
         delay(500);
+        Serial.print(".");
+    }
+    Serial.println();
+    
+    if (getLocalTime(&timeinfo)) {
+        char debugTime[32];
+        strftime(debugTime, sizeof(debugTime), "%Y-%m-%d %H:%M:%S", &timeinfo);
+        Serial.printf("[NTP] Time verified successfully: %s\n", debugTime);
+    } else {
+        Serial.println("[NTP] Warning: Could not resolve current NTP epoch string.");
     }
 }
 
 bool fetchAPIData() {
     HTTPClient http;
+    Serial.printf("[HTTP] Connecting to endpoint: %s\n", awsEndpoint);
     http.begin(awsEndpoint);
     http.addHeader("X-API-Key", AWS_API_KEY);
     
     int httpCode = http.GET();
+    Serial.printf("[HTTP] Server responded with code: %d\n", httpCode);
+    
     if (httpCode != HTTP_CODE_OK) {
         http.end();
         return false;
     }
 
+    Serial.println("[JSON] Parsing payload into local memory layout...");
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, http.getStream());
     
     if (error) {
+        Serial.printf("[JSON] Deserialization failure: %s\n", error.c_str());
         http.end();
         return false;
     }
 
-    // Modern ArduinoJson 7 null/presence check
     if (doc["pageDelaySec"]) {
         rtcPageDelaySec = doc["pageDelaySec"].as<uint32_t>();
+        Serial.printf("[JSON] Global page delay parameter updated: %d seconds\n", rtcPageDelaySec);
     }
 
     JsonArray pagesArray = doc["pages"].as<JsonArray>();
     rtcPageCount = 0;
 
     for (JsonObject p : pagesArray) {
-        if (rtcPageCount >= 10) break; // Hard ceiling rule compliance
+        if (rtcPageCount >= 10) break; 
 
         Page customPage;
         JsonArray itemsArray = p["items"].as<JsonArray>();
         customPage.itemCount = 0;
 
+        Serial.printf("  Parsing Page [%d]:\n", (int)rtcPageCount + 1);
         for (JsonObject item : itemsArray) {
-            if (customPage.itemCount >= 3) break; // Max 3 items per page
+            if (customPage.itemCount >= 3) break; 
 
             size_t idx = customPage.itemCount;
             strlcpy(customPage.items[idx].key, item["key"] | "", sizeof(customPage.items[idx].key));
             strlcpy(customPage.items[idx].value, item["value"] | "", sizeof(customPage.items[idx].value));
+            
+            Serial.printf("    -> %s: %s\n", customPage.items[idx].key, customPage.items[idx].value);
             customPage.itemCount++;
         }
         
@@ -253,6 +305,7 @@ bool fetchAPIData() {
 
     http.end();
     statusIcon = 'R'; 
+    Serial.printf("[API] Parsing finished. Successfully imported %d dashboard pages.\n", rtcPageCount);
     return (rtcPageCount > 0);
 }
 
@@ -261,16 +314,11 @@ void handleError() {
     rtcFailCount++;
     rtcHasValidData = false;
     
+    Serial.printf("[FAIL STATE] Triggering alternative safety fallback sequence (Failures: %d)\n", rtcFailCount);
     updateDisplay(nullptr, "System Error");
     
-    // Sleep for 30 seconds before executing an explicit hardware cycle retry
+    Serial.println("[Power] Short-cycling deep sleep for 30 seconds before structural fallback retry...");
     esp_sleep_enable_timer_wakeup(30 * 1000000ULL);
+    Serial.flush();
     esp_deep_sleep_start();
 }
-
-// --- Disabled OTA updates wrapper placeholder ---
-/*
-void checkOTAUpdates() {
-    // Disabled intentionally for now.
-}
-*/
