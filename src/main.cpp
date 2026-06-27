@@ -58,7 +58,7 @@ void setup() {
     // 1. Manually route SPI pins to match your board
     SPI.begin(EINK_SCL, -1, EINK_SDA, EINK_CS); 
     display.init(115200, rtcIsFirstBoot, 10, false);
-    display.setRotation(1); // 90° Clockwise rotation
+    display.setRotation(3); // 90° Clockwise rotation
 
     if (rtcIsFirstBoot) {
         rtcIsFirstBoot = false;
@@ -144,7 +144,7 @@ void drawLayout(Page* page, const char* stepMsg) {
     // Right-aligned status and battery placeholder
     char topRightStr[16];
     snprintf(topRightStr, sizeof(topRightStr), "N/A%% [%c]", statusIcon);
-    display.setCursor(display.width() - 80, 20);
+    display.setCursor(display.width() - 85, 20);
     display.print(topRightStr);
 
     // Horizontal line separator
@@ -193,8 +193,7 @@ void updateDisplay(Page* page, const char* stepMsg) {
 
 // --- Data & Sync Functions ---
 void syncTime() {
-    // Set time zone directly to Oslo/Europe
-    configT9542(0, 0, "no.pool.ntp.org", "pool.ntp.org");
+    configTime(0, 0, "no.pool.ntp.org", "pool.ntp.org");
     setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
     tzset();
     
@@ -216,7 +215,6 @@ bool fetchAPIData() {
         return false;
     }
 
-    // Process Payload safely
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, http.getStream());
     
@@ -225,12 +223,11 @@ bool fetchAPIData() {
         return false;
     }
 
-    // Override system delay configuration if passed
-    if (doc.containsKey("pageDelaySec")) {
+    // Modern ArduinoJson 7 null/presence check
+    if (doc["pageDelaySec"]) {
         rtcPageDelaySec = doc["pageDelaySec"].as<uint32_t>();
     }
 
-    // Map parsing arrays safely into persistent structure
     JsonArray pagesArray = doc["pages"].as<JsonArray>();
     rtcPageCount = 0;
 
