@@ -7,12 +7,13 @@
 #include <SPI.h>
 #include <time.h>
 #include <Preferences.h>
-#include <esp_wifi.h> // Required for advanced radio adjustments
+#include <esp_wifi.h>
 
-// --- Font Inclusions for Variable Layout Sizing ---
-#include <Fonts/FreeSans9pt7b.h>       // Size 1 (Small)
-#include <Fonts/FreeSans12pt7b.h>     // Size 2 (Medium - Default)
-#include <Fonts/FreeSansBold12pt7b.h> // Size 3 (Large/Bold)
+// --- Font Inclusions ---
+#include <Fonts/FreeSans9pt7b.h>       
+#include <Fonts/FreeSansBold9pt7b.h>   
+#include <Fonts/FreeSans12pt7b.h>     
+#include <Fonts/FreeSansBold12pt7b.h> 
 
 // --- Pin Definitions ---
 #define EINK_SCL   4   
@@ -37,6 +38,7 @@ uint32_t rtcTickCounter = 0;
 uint32_t rtcFailCount = 0;
 bool rtcHasValidData = false;
 bool rtcIsFirstBoot = true;
+bool rtcTriggerFullRefresh = true; // New Flag: Controls Full vs Partial refresh states
 char rtcErrorMessage[64] = "No Error"; 
 
 char statusIcon = 'F'; 
@@ -58,9 +60,7 @@ void setup() {
     Serial.println("\n--- ESP32-C3 Wakeup / Flash Memory Mode ---");
     loadStateFromFlash(); 
     
-    // FOOLPROOF TIMEZONE FIX:
-    // Re-apply the Oslo POSIX timezone rules immediately upon every single wakeup.
-    // This instantly converts the raw deep-sleep hardware clock back to local Oslo time.
+    // Instantly force local Oslo rules on hardware wake
     setenv("TZ", "CET-1CEST-2,M3.5.0/02:00:00,M10.5.0/03:00:00", 1);
     tzset();
     
@@ -75,20 +75,21 @@ void setup() {
         rtcCurrentPageIndex = 0;
         rtcTickCounter = 0;
         rtcFailCount = 0;
+        rtcTriggerFullRefresh = true; // Force crisp clean on initial power-on
         strlcpy(rtcErrorMessage, "None", sizeof(rtcErrorMessage));
         saveStateToFlash();
     }
 
-    // Network Sync Block (Only connects to Wi-Fi when the data cache expires)
+    // Network Sync Block
     if (!rtcHasValidData || rtcPageCount == 0) {
         if (rtcFailCount > 0) statusIcon = 'R'; 
         
         Serial.println("[Network] Cache empty. Activating Robust Wi-Fi Stack...");
         
         WiFi.mode(WIFI_STA);
-        esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B); // Long-range fallback
+        esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B); // Long range configuration
         WiFi.begin(LOCAL_SSID, LOCAL_PASS);
-        esp_wifi_set_ps(WIFI_PS_NONE); // High sensitivity mode
+        esp_wifi_set_ps(WIFI_PS_NONE); // Full radio power alert mode
         WiFi.setTxPower(WIFI_POWER_15dBm); 
 
         int retry = 0;
@@ -102,11 +103,18 @@ void setup() {
             handleError("WiFi Link Timeout");
         }
         
-        // This syncs the underlying Unix timestamp via NTP internet servers
         syncTime();
 
         statusIcon = 'F';
+        
+        // This display update uses the flag status determined at the end of the previous cycle
         updateDisplay("Fetching API...");
+        
+        // Once a full clean refresh runs successfully, reset the flag for subsequent partials
+        if (rtcTriggerFullRefresh) {
+            rtcTriggerFullRefresh = false; 
+        }
+
         if (!fetchAPIData()) {
             Serial.println("[ERROR] API data fetch failed!");
         }
@@ -122,15 +130,21 @@ void setup() {
 
     statusIcon = 'W'; 
     Serial.printf("[UI] Rendering Page %d/%d...\n", (int)rtcCurrentPageIndex + 1, (int)rtcPageCount);
+    
+    // Render current layout out of flash storage memory arrays
     updateDisplay(""); 
 
-    // Increment pagination tracking
+    // Move pointers forward for the next deep sleep loop sequence
     rtcCurrentPageIndex++;
     rtcTickCounter += 10; 
 
+    // CRITICAL REFRESH LOGIC BOUNDARY:
+    // Check if we just completed rendering the final available dashboard page
     if (rtcCurrentPageIndex >= rtcPageCount) {
+        Serial.println("[Paging] Last page complete. Invalidating cache and queueing full refresh flag.");
         rtcCurrentPageIndex = 0; 
         rtcHasValidData = false; 
+        rtcTriggerFullRefresh = true; // Flag tells the system to execute a full clean on next loop wake
     }
 
     saveStateToFlash(); 
@@ -149,6 +163,7 @@ void loadStateFromFlash() {
     prefs.begin("dash_state", true); 
     rtcIsFirstBoot = prefs.getBool("firstBoot", true);
     rtcHasValidData = prefs.getBool("validData", false);
+    rtcTriggerFullRefresh = prefs.getBool("fullRefresh", true); // Pull full refresh state
     rtcCurrentPageIndex = prefs.getUInt("pageIdx", 0);
     rtcPageCount = prefs.getUInt("pageCount", 0);
     rtcPageDelaySec = prefs.getUInt("delaySec", 45);
@@ -162,6 +177,7 @@ void saveStateToFlash() {
     prefs.begin("dash_state", false); 
     prefs.putBool("firstBoot", rtcIsFirstBoot);
     prefs.putBool("validData", rtcHasValidData);
+    prefs.putBool("fullRefresh", rtcTriggerFullRefresh); // Save full refresh state
     prefs.putUInt("pageIdx", rtcCurrentPageIndex);
     prefs.putUInt("pageCount", rtcPageCount);
     prefs.putUInt("delaySec", rtcPageDelaySec);
@@ -176,8 +192,8 @@ void drawLayout(const char* stepMsg) {
     display.fillScreen(GxEPD_WHITE);
     display.setTextColor(GxEPD_BLACK);
     
-    // --- Top Bar Layout ---
-    display.setFont(&FreeSans9pt7b);
+    // --- Top Bar Layout (Upgraded to Size 2) ---
+    display.setFont(&FreeSansBold9pt7b); // Changed from FreeSans9pt7b
     
     // 1. Time string aligned to the far LEFT
     struct tm timeinfo;
@@ -185,31 +201,33 @@ void drawLayout(const char* stepMsg) {
     if (getLocalTime(&timeinfo) && timeinfo.tm_year >= 120) { 
         strftime(timeStr, sizeof(timeStr), "%H:%M", &timeinfo);
     }
-    display.setCursor(5, 20);
+    display.setCursor(5, 23); // Lowered from 20 to account for font height
     display.print(timeStr);
 
     // 2. Pure page counter aligned in the MIDDLE
     char midPageStr[16];
     snprintf(midPageStr, sizeof(midPageStr), "%d/%d", (int)rtcCurrentPageIndex + 1, (int)rtcPageCount);
-    // 200px wide screen means the center coordinate is 100. We offset roughly half the text width.
-    display.setCursor(88, 20); 
+    // Adjusted from 88 to 82 because Size 2 characters are wider
+    display.setCursor(82, 23); 
     display.print(midPageStr);
 
     // 3. Battery string aligned to the far RIGHT
-    char rightBatStr[16] = "N/A%";
-    display.setCursor(display.width() - 48, 20);
+    char rightBatStr[17] = "N/A%";
+    // Adjusted from width - 48 to width - 60 to prevent the text from clipping the right edge
+    display.setCursor(display.width() - 60, 23);
     display.print(rightBatStr);
 
-    display.drawFastHLine(0, 30, display.width(), GxEPD_BLACK);
+    // Lowered the divider line from 30 to 34 to accommodate the larger font footprint
+    display.drawFastHLine(0, 34, display.width(), GxEPD_BLACK);
 
     if (statusIcon == 'X') {
         display.setFont(&FreeSansBold12pt7b);
-        display.setCursor(5, 65);
+        display.setCursor(5, 72);
         display.print("Error Occurred:");
         display.setFont(&FreeSans9pt7b);
-        display.setCursor(5, 105);
+        display.setCursor(5, 110);
         display.print(rtcErrorMessage);
-        display.setCursor(5, 145);
+        display.setCursor(5, 150);
         display.printf("Retrying in 30s... (%d)", (int)rtcFailCount);
         return;
     }
@@ -220,7 +238,8 @@ void drawLayout(const char* stepMsg) {
     snprintf(pageKey, sizeof(pageKey), "p_%d_cnt", (int)rtcCurrentPageIndex);
     int itemsInPage = prefs.getInt(pageKey, 0);
 
-    int yStart = 65; 
+    // Shifted core content starting point down from 65 to 72 to keep away from the lower divider line
+    int yStart = 72; 
     for (int i = 0; i < itemsInPage; i++) {
         char kStr[32] = "";
         char vStr[64] = "";
@@ -254,10 +273,14 @@ void drawLayout(const char* stepMsg) {
 }
 
 void updateDisplay(const char* stepMsg) {
-    if (rtcTickCounter == 0 && rtcCurrentPageIndex == 0) {
+    if (rtcTriggerFullRefresh) {
+        Serial.println("[Display] Executing heavy, anti-ghosting FULL refresh cycle...");
         display.firstPage();
         do { drawLayout(stepMsg); } while (display.nextPage());
     } else {
+        Serial.println("[Display] Executing quick PARTIAL window refresh...");
+        // Keeping boundaries set to maximum display width/height dimensions 
+        // ensures the newly positioned top bar artifacts refresh smoothly.
         display.setPartialWindow(0, 0, display.width(), display.height());
         display.firstPage();
         do { drawLayout(stepMsg); } while (display.nextPage());
@@ -352,6 +375,7 @@ void handleError(const char* conceptualError) {
     statusIcon = 'X';
     rtcFailCount++;
     rtcHasValidData = false;
+    rtcTriggerFullRefresh = true; // Clean out artifacts when a hard error drops
     strlcpy(rtcErrorMessage, conceptualError, sizeof(rtcErrorMessage));
     saveStateToFlash();
     updateDisplay("");
