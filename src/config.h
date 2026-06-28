@@ -11,7 +11,7 @@
 #define EINK_DC    2   
 #define EINK_RES   3   
 #define EINK_BUSY  1   
-#define BATTERY_PIN 7 
+#define BATTERY_PIN 0
 
 // --- Global Shared Non-Volatile States ---
 extern size_t rtcPageCount;

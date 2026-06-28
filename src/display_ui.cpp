@@ -18,14 +18,20 @@ void initDisplay() {
 }
 
 int getBatteryPercentage() {
+    // 1. Force GPIO 7 to use the wide 11dB voltage window (up to ~3.1V)
+    analogSetPinAttenuation(BATTERY_PIN, ADC_11db); 
+
     uint32_t rawSum = 0;
     for(int i = 0; i < 10; i++) {
         rawSum += analogReadMilliVolts(BATTERY_PIN);
         delay(5);
     }
     double measuredMv = rawSum / 10.0;
+    
+    // 2. Reconstruct the true battery voltage (Multiply by 2 because of the split)
     double batV = (measuredMv * 2.0) / 1000.0; 
 
+    // 3. Convert voltage to percentage (3.3V = 0%, 4.2V = 100%)
     int pct = (int)((batV - 3.3) / (4.2 - 3.3) * 100.0);
     if (pct > 100) pct = 100;
     if (pct < 0) pct = 0;
