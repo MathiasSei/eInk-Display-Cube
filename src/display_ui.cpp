@@ -18,24 +18,47 @@ void initDisplay() {
 }
 
 int getBatteryPercentage() {
-    // 1. Force GPIO 7 to use the wide 11dB voltage window (up to ~3.1V)
+    // 1. Force GPIO 0 to use the wide 11dB voltage window
     analogSetPinAttenuation(BATTERY_PIN, ADC_11db); 
 
+    // Take an oversampled instant reading to smooth out minor electrical spikes
     uint32_t rawSum = 0;
-    for(int i = 0; i < 10; i++) {
+    for(int i = 0; i < 15; i++) {
         rawSum += analogReadMilliVolts(BATTERY_PIN);
         delay(5);
     }
-    double measuredMv = rawSum / 10.0;
+    double measuredMv = rawSum / 15.0;
     
-    // 2. Reconstruct the true battery voltage (Multiply by 2 because of the split)
+    // Reconstruct true battery voltage (Multiply by 2 due to the 100k/100k split)
     double batV = (measuredMv * 2.0) / 1000.0; 
 
-    // 3. Convert voltage to percentage (3.3V = 0%, 4.2V = 100%)
-    int pct = (int)((batV - 3.3) / (4.2 - 3.3) * 100.0);
-    if (pct > 100) pct = 100;
-    if (pct < 0) pct = 0;
-    return pct;
+    // Convert raw voltage to an instant percentage
+    int instantPct = (int)((batV - 3.3) / (4.16 - 3.3) * 100.0);
+    if (instantPct > 100) instantPct = 100;
+    if (instantPct < 0) instantPct = 0;
+
+    // 2. Compute the Rolling Moving Average across Deep Sleep Cycles
+    if (rtcBatteryReadingCount < 4) {
+        // First boot safety fill: populate history with the first real reading
+        for(int i = 0; i < 4; i++) {
+            rtcBatteryHistory[i] = instantPct;
+        }
+        rtcBatteryReadingCount = 4; 
+    } else {
+        // Shift history array left to discard the oldest point, then drop in the newest
+        rtcBatteryHistory[0] = rtcBatteryHistory[1];
+        rtcBatteryHistory[1] = rtcBatteryHistory[2];
+        rtcBatteryHistory[2] = rtcBatteryHistory[3];
+        rtcBatteryHistory[3] = instantPct;
+    }
+
+    // Average the historical pool
+    int smoothedSum = 0;
+    for(int i = 0; i < 4; i++) {
+        smoothedSum += rtcBatteryHistory[i];
+    }
+    
+    return smoothedSum / 4;
 }
 
 void drawLayout(const char* stepMsg) {

@@ -19,6 +19,10 @@ char rtcErrorMessage[64] = "No Error";
 char statusIcon = 'F'; 
 const char* awsEndpoint = "https://lowbd437e3.execute-api.eu-north-1.amazonaws.com/v1/data";
 
+// --- Moving Average Variables ---
+int rtcBatteryHistory[4] = {0, 0, 0, 0};
+int rtcBatteryReadingCount = 0;
+
 void setup() {
     Serial.begin(115200);
     delay(1000); 

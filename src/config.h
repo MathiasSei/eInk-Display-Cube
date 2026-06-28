@@ -25,6 +25,10 @@ extern bool rtcTriggerFullRefresh;
 extern char rtcErrorMessage[64]; 
 extern char statusIcon; 
 
+// --- Battery Moving Average Tracker ---
+extern int rtcBatteryHistory[4];
+extern int rtcBatteryReadingCount;
+
 extern const char* awsEndpoint;
 
 // --- Shared Core Helpers ---
