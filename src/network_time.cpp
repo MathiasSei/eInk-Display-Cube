@@ -34,6 +34,43 @@ void syncTime() {
     }
 }
 
+bool sendBatteryLogs(double voltage, int percentage) {
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[HTTP] Cannot log battery: Wi-Fi disconnected.");
+        return false;
+    }
+
+    WiFiClientSecure client;
+    client.setInsecure(); // Matches your architecture pattern
+    HTTPClient http;
+    
+    // Connect to the specific battery tracking endpoint injected from your .ini
+    http.begin(client, AWS_API_ENDPOINT);
+    
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("x-api-key", AWS_TELEMETRY_KEY); // Security check key verification
+
+    // Pack telemetry payload seamlessly
+    char jsonPayload[128];
+    snprintf(jsonPayload, sizeof(jsonPayload), 
+             "{\"voltage\": %.3f, \"percentage\": %d, \"device_id\": \"esp32c3_clock\"}", 
+             voltage, percentage);
+
+    Serial.printf("[HTTP] Transmitting telemetry payload: %s\n", jsonPayload);
+    int httpCode = http.POST(jsonPayload);
+    
+    bool success = false;
+    if (httpCode == HTTP_CODE_OK || httpCode == 201) {
+        Serial.println("[HTTP] Battery telemetry pushed successfully.");
+        success = true;
+    } else {
+        Serial.printf("[HTTP] Telemetry POST failed, response code: %d\n", httpCode);
+    }
+    
+    http.end();
+    return success;
+}
+
 bool fetchAPIData() {
     WiFiClientSecure client;
     client.setInsecure(); 

@@ -30,8 +30,9 @@ void setup() {
     Serial.println("\n--- ESP32-C3 Modular Boot Sequential Mode ---");
     loadStateFromFlash(); 
 
+    // Globally establish the correct attenuation settings for your resistor divider readings
     analogSetAttenuation(ADC_11db);
-    // pinMode(BATTERY_PIN, INPUT);
+    analogSetPinAttenuation(BATTERY_PIN, ADC_11db);
 
     setenv("TZ", "CET-1CEST-2,M3.5.0/02:00:00,M10.5.0/03:00:00", 1);
     tzset();
@@ -49,6 +50,16 @@ void setup() {
         saveStateToFlash();
     }
 
+    // 1. Unconditional Battery Telemetry Gathering (Always available for display draw)
+    uint32_t rawSum = 0;
+    for(int i = 0; i < 15; i++) { 
+        rawSum += analogReadMilliVolts(BATTERY_PIN); 
+        delay(5); 
+    }
+    double measuredMv = rawSum / 15.0;
+    double batV = (measuredMv * 2.0) / 1000.0; // The raw calculated voltage
+    int currentPct = getBatteryPercentage();   // The rolling smoothed moving average percentage
+
     // Network Processing Conditional Logic Block
     if (!rtcHasValidData || rtcPageCount == 0) {
         if (rtcFailCount > 0) statusIcon = 'R'; 
@@ -60,6 +71,9 @@ void setup() {
         
         syncTime();
         statusIcon = 'F';
+        
+        // 2. Transmit telemetry to AWS securely over Wi-Fi
+        sendBatteryLogs(batV, currentPct);
         
         updateDisplay("Fetching API...");
         if (rtcTriggerFullRefresh) { rtcTriggerFullRefresh = false; }

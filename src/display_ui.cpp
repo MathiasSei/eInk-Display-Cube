@@ -33,7 +33,7 @@ int getBatteryPercentage() {
     double batV = (measuredMv * 2.0) / 1000.0; 
 
     // Convert raw voltage to an instant percentage
-    int instantPct = (int)((batV - 3.3) / (4.16 - 3.3) * 100.0);
+    int instantPct = (int)((batV - 3.3) / (4.1 - 3.3) * 100.0);
     if (instantPct > 100) instantPct = 100;
     if (instantPct < 0) instantPct = 0;
 
