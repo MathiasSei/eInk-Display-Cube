@@ -36,8 +36,10 @@ void drawLayout(const char* stepMsg) {
     display.fillScreen(GxEPD_WHITE);
     display.setTextColor(GxEPD_BLACK);
     
+    // --- Top Bar Layout ---
     display.setFont(&FreeSans12pt7b); 
     
+    // 1. Left-aligned Local Time
     struct tm timeinfo;
     char timeStr[6] = "--:--";
     if (getLocalTime(&timeinfo) && timeinfo.tm_year >= 120) { 
@@ -46,14 +48,26 @@ void drawLayout(const char* stepMsg) {
     display.setCursor(5, 23); 
     display.print(timeStr);
 
+    // 2. Page Counter (Shifted right from 82 to 100)
     char midPageStr[16];
     snprintf(midPageStr, sizeof(midPageStr), "%d/%d", (int)rtcCurrentPageIndex + 1, (int)rtcPageCount);
-    display.setCursor(82, 23); 
+    display.setCursor(85, 23); // <--- Adjusted one step to the right
     display.print(midPageStr);
 
+    // 3. Dynamic Right-Aligned Battery Gauge
     char rightBatStr[16];
     snprintf(rightBatStr, sizeof(rightBatStr), "%d%%", getBatteryPercentage());
-    display.setCursor(display.width() - 60, 23);
+    
+    int16_t x1, y1;
+    uint16_t textWidth, textHeight;
+    
+    // Calculate string bounds dynamically
+    display.getTextBounds(rightBatStr, 0, 23, &x1, &y1, &textWidth, &textHeight);
+    
+    // Lock percentage flush right with a clean 5px margin
+    int16_t targetX = display.width() - textWidth - 5;
+    
+    display.setCursor(targetX, 23);
     display.print(rightBatStr);
 
     display.drawFastHLine(0, 34, display.width(), GxEPD_BLACK);
@@ -70,6 +84,7 @@ void drawLayout(const char* stepMsg) {
         return;
     }
 
+    // --- Dynamic Content Sizing Pipeline ---
     prefs.begin("dash_pages", true);
     char pageKey[16];
     snprintf(pageKey, sizeof(pageKey), "p_%d_cnt", (int)rtcCurrentPageIndex);
