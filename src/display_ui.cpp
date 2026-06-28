@@ -145,7 +145,7 @@ void drawLayout(const char* stepMsg) {
         }
 
         display.setCursor(5, yStart);
-        display.printf("%s: %s", kStr, vStr);
+        display.printf("%s%s", kStr, vStr);
         yStart += (fontSize == 1) ? 22 : (fontSize == 3) ? 35 : 28;
     }
     prefs.end();
